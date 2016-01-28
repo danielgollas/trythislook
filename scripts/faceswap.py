@@ -195,37 +195,41 @@ def warp_im(im, M, dshape):
     return output_im
 
 
-def correct_colours(im1, im2, landmarks1):
+def correct_colours(target, source, landmarks1):
     blur_amount = COLOUR_CORRECT_BLUR_FRAC * numpy.linalg.norm(
             numpy.mean(landmarks1[LEFT_EYE_POINTS], axis=0) -
             numpy.mean(landmarks1[RIGHT_EYE_POINTS], axis=0))
     blur_amount = int(blur_amount)
     if blur_amount % 2 == 0:
         blur_amount += 1
-    im1_blur = cv2.GaussianBlur(im1, (blur_amount, blur_amount), 0)
-    im2_blur = cv2.GaussianBlur(im2, (blur_amount, blur_amount), 0)
+    im1_blur = cv2.GaussianBlur(target, (blur_amount, blur_amount), 0)
+    im2_blur = cv2.GaussianBlur(source, (blur_amount, blur_amount), 0)
 
     # Avoid divide-by-zero errors.
     im2_blur += (128 * (im2_blur <= 1.0)).astype(im2_blur.dtype)
 
-    return (im2.astype(numpy.float64) * im1_blur.astype(numpy.float64) /
+    return (source.astype(numpy.float64) * im1_blur.astype(numpy.float64) /
             im2_blur.astype(numpy.float64))
 
 
-im1, landmarks1 = read_im_and_landmarks(sys.argv[1])
-im2, landmarks2 = read_im_and_landmarks(sys.argv[2])
 
-M = transformation_from_points(landmarks1[ALIGN_POINTS],
-                               landmarks2[ALIGN_POINTS])
 
-mask = get_face_mask(im2, landmarks2)
-warped_mask = warp_im(mask, M, im1.shape)
-combined_mask = numpy.max([get_face_mask(im1, landmarks1), warped_mask],
-                          axis=0)
+if __name__ == "__main__":
 
-warped_im2 = warp_im(im2, M, im1.shape)
-warped_corrected_im2 = correct_colours(im1, warped_im2, landmarks1)
+    head, head_landmarks = read_im_and_landmarks(sys.argv[1]) #HEAD
+    face, face_landmarks = read_im_and_landmarks(sys.argv[2]) #FACE
 
-output_im = im1 * (1.0 - combined_mask) + warped_corrected_im2 * combined_mask
+    M = transformation_from_points(head_landmarks[ALIGN_POINTS],
+                                   face_landmarks[ALIGN_POINTS])
 
-cv2.imwrite('output.jpg', output_im)
+    mask = get_face_mask(face, face_landmarks)
+    warped_mask = warp_im(mask, M, head.shape)
+    combined_mask = numpy.max([get_face_mask(head, head_landmarks), warped_mask],
+                              axis=0)
+
+    warped_im2 = warp_im(face, M, head.shape)
+    warped_corrected_im2 = correct_colours(head, warped_im2, head_landmarks)
+
+    output_im = head * (1.0 - combined_mask) + warped_corrected_im2 * combined_mask
+
+    cv2.imwrite('output.jpg', output_im)
