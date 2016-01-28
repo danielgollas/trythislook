@@ -37,7 +37,7 @@ class FaceImage(object):
     MASK_SHAPE_T = 0
     MASK_SHAPE_OVAL = 1
 
-    def __init__(self, path=None, scale_factor=1, detector=None, predictor=None):
+    def __init__(self, path=None, scale_factor=1, detector=None, predictor=None, max_size = 1024):
         self.scale_factor = scale_factor
         self.path = path
         self.img = None
@@ -55,6 +55,7 @@ class FaceImage(object):
         self.landmarks = None
         self.detector = detector
         self.predictor = predictor
+        self.max_size = max_size
 
         if self.path:
             self.load()
@@ -85,8 +86,28 @@ class FaceImage(object):
         self.path = assert_file_exists(self.path)
         logger.info("Loading face: %s" % (self.path))
         self.img = cv2.imread(self.path)
-        self.steps["original"] = self.img.copy()
+        w, h = self.img.shape[1], self.img.shape[0]
+        if w > self.max_size or h > self.max_size:
+            #image is too big, resize to max size
+            ratio = float(w) / float(h)
+            if ratio > 1.0:
+                #image wider than taller, make width = max_size
+                new_w = int(self.max_size)
+                new_h = int(self.max_size*ratio)
+
+
+            else:
+                #image taller than wider
+                new_w = int(self.max_size * ratio)
+                new_h = int(self.max_size)
+
+            newShape = (new_w, new_h)
+            self.steps["original"] = cv2.resize(self.img, newShape)
+        else:
+            self.steps["original"] = self.img.copy()
+
         #if self.scale_factor != 1:
+
         self.img = cv2.resize(self.img,
                                   (self.img.shape[1] * self.scale_factor, self.img.shape[0] * self.scale_factor))
 
@@ -94,17 +115,17 @@ class FaceImage(object):
         if not self.detector:
             raise NoDetector
 
-        rects = self.detector(self.img, 1)
+        rects = self.detector(self.steps["original"], 1)
         if len(rects) > 1:
             raise TooManyFaces
         if len(rects) == 0:
-            raise NoFaces
+            raise TooFewFaces
 
-        self.landmarks = numpy.matrix([[p.x, p.y] for p in self.predictor(self.img, rects[0]).parts()])
+        self.landmarks = numpy.matrix([[p.x, p.y] for p in self.predictor(self.steps["original"], rects[0]).parts()])
         self.annotate_landmarks()
 
     def annotate_landmarks(self):
-        self.steps["annotated"] = self.img.copy()
+        self.steps["annotated"] = self.steps["original"].copy()
         for idx, point in enumerate(self.landmarks):
             pos = (point[0, 0], point[0, 1])
             cv2.putText(self.steps["annotated"], str(idx), pos,
@@ -119,8 +140,8 @@ class FaceImage(object):
 
     def afine_transform(self, transform_matrix, shape):
         self.transform_matrix = transform_matrix
-        self.steps["transformed"] = numpy.zeros(shape, dtype=self.img.dtype)
-        cv2.warpAffine(self.img,
+        self.steps["transformed"] = numpy.zeros(shape, dtype=self.steps["original"].dtype)
+        cv2.warpAffine(self.steps["original"],
                        transform_matrix[:2],
                        (shape[1], shape[0]),
                        dst=self.steps["transformed"],
@@ -136,7 +157,7 @@ class FaceImage(object):
     def create_mask(self, shape, type=MASK_SHAPE_T, overlay_points=None,
                     feather_amount=11, color=1.0, scale=1.0, transform_matrix = None):
 
-        mask = numpy.zeros(self.img.shape[:2], dtype=numpy.float64)
+        mask = numpy.zeros(self.steps["original"].shape[:2], dtype=numpy.float64)
 
         for group in overlay_points:
             self.draw_convex_hull(mask,
@@ -228,11 +249,13 @@ class Faceoff(object):
 
     # element will be overlaid.
 
-    def __init__(self, shape_predictor_path="shape_predictor_68_face_landmarks.dat"):
+    def __init__(self, shape_predictor_path="shape_predictor_68_face_landmarks.dat", max_size=1024):
         self.shape_predictor_path = shape_predictor_path
         self.scale_factor = 1
         self.feather_amount = 25
         self.color_correct_blur = 0.6
+
+        self.max_size = max_size
 
         self.detector = dlib.get_frontal_face_detector()
         self.predictor = None
@@ -262,17 +285,16 @@ class Faceoff(object):
         out_dir = os.path.join(out_dir, "results")
 
         face_img_prefix = os.path.splitext(os.path.basename(self.face_image.path))[0]
+        self.face_image.save_img("original", dir=out_dir, frame_number=0)
+
         self.face_image.find_landmarks()
-
-
         tmp_name = face_img_prefix+"_landmarks"
-        self.face_image.save_img("original",  dir = out_dir, frame_number=0)
+
         self.face_image.save_img("annotated", dir = out_dir, frame_number=1)
         try:
             os.mkdir(out_dir)
         except Exception as e:
             pass
-
 
         for head_image in self.head_images:
             head_img_prefix = os.path.splitext(os.path.basename(head_image.path))[0]
@@ -288,7 +310,7 @@ class Faceoff(object):
             #align_matrix = self.get_alignment_matrix(self.face_image, head_image)
 
             # CREATE A FACE MASK
-            self.face_image.create_mask(head_image.img.shape, type=FaceImage.MASK_SHAPE_T, overlay_points=self.OVERLAY_POINTS,
+            self.face_image.create_mask(head_image.steps["original"].shape, type=FaceImage.MASK_SHAPE_T, overlay_points=self.OVERLAY_POINTS,
                                         feather_amount=self.feather_amount, transform_matrix=align_matrix)
             self.face_image.save_img(step="mask", name=tmp_name, dir=out_dir, frame_number=3)
 
@@ -298,7 +320,7 @@ class Faceoff(object):
                                         feather_amount=self.feather_amount, transform_matrix=None)
 
             #TRANSFORM ORIGINAL IMAGE
-            self.face_image.afine_transform(align_matrix, head_image.img.shape)
+            self.face_image.afine_transform(align_matrix, head_image.steps["original"].shape)
             self.face_image.save_img("transformed", name=tmp_name, dir= out_dir, frame_number=4)
 
             #COLOR CORRECT FACE
@@ -322,10 +344,10 @@ class Faceoff(object):
 
     def load_images(self, face_img_path, head_img_paths=[]):
 
-        self.face_image = FaceImage(path=face_img_path, detector=self.detector, predictor=self.predictor)
+        self.face_image = FaceImage(path=face_img_path, detector=self.detector, predictor=self.predictor, max_size = self.max_size)
         logger.info("Loading %i heads" % (len(head_img_paths)))
         for head_img_path in head_img_paths:
-            tmp_face_img = FaceImage(head_img_path, detector=self.detector, predictor=self.predictor)
+            tmp_face_img = FaceImage(head_img_path, detector=self.detector, predictor=self.predictor, max_size=self.max_size)
             self.head_images.append(tmp_face_img)
 
     def get_alignment_matrix(self, face_a, face_b):
@@ -366,8 +388,8 @@ if __name__ == "__main__":
 
     fo = Faceoff()
 
-    face = "../dgollas.jpg"
+    face = "../sarav.jpg"
     # heads = ["../meghan.png","../girl.jpg"]
-    heads = ["../meghan.png"]
+    heads = ["../jeremy.jpg"]
 
     fo.faceoff(face, heads)
